@@ -19,4 +19,4 @@ ENV NODE_ENV=production
 ENV PORT=9000
 EXPOSE 9000
 
-CMD ["sh", "-c", "npx medusa db:migrate && npm run start"]
+CMD ["sh", "-c", "npx medusa db:migrate; npm run start"]

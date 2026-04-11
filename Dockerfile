@@ -12,12 +12,14 @@ WORKDIR /app
 
 COPY --from=builder /app/.medusa/server/package*.json ./
 COPY --from=builder /app/.medusa/server/ ./
+COPY start.sh ./
 
 RUN npm ci --legacy-peer-deps
 RUN rm -f .env .env.production .env.local
+RUN chmod +x start.sh
 
 ENV NODE_ENV=production
 ENV PORT=9000
 EXPOSE 9000
 
-CMD ["sh", "-c", "npx medusa db:migrate && npm run start"]
+CMD ["sh", "start.sh"]

@@ -2,8 +2,9 @@ name: Backup base de données Nutrelis
 
 on:
   schedule:
-    # Tous les dimanches à 3h UTC
-    - cron: '0 3 * * 0'
+    # 2x par jour : 6h et 18h UTC (7h et 19h heure Cameroun)
+    - cron: '0 6 * * *'
+    - cron: '0 18 * * *'
   workflow_dispatch: # Permet de lancer manuellement depuis GitHub
 
 jobs:
@@ -56,7 +57,7 @@ jobs:
           COUNT=0
           for FILE in $FILES; do
             COUNT=$((COUNT + 1))
-            if [ "$COUNT" -gt 10 ]; then
+            if [ "$COUNT" -gt 20 ]; then
               curl -s -u "$FTP_USER:$FTP_PASS" "ftp://$FTP_HOST/" -Q "DELE NUTRELIS-BACKUP/$FILE" > /dev/null 2>&1
               echo "Supprimé: $FILE"
             fi

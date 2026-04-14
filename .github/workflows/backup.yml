@@ -1,0 +1,64 @@
+name: Backup base de données Nutrelis
+
+on:
+  schedule:
+    # Tous les dimanches à 3h UTC
+    - cron: '0 3 * * 0'
+  workflow_dispatch: # Permet de lancer manuellement depuis GitHub
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Installer PostgreSQL 18 client
+        run: |
+          sudo sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
+          wget -qO - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-client-18
+          /usr/lib/postgresql/18/bin/pg_dump --version
+
+      - name: Sauvegarder la base de données
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          DATE=$(date +%Y-%m-%d_%H-%M)
+          FILENAME="nutrelis_backup_${DATE}.sql.gz"
+          /usr/lib/postgresql/18/bin/pg_dump "$DATABASE_URL" --no-owner --no-acl | gzip > "$FILENAME"
+          SIZE=$(du -h "$FILENAME" | cut -f1)
+          FILESIZE=$(stat -c%s "$FILENAME")
+          echo "Backup: $FILENAME ($SIZE)"
+          if [ "$FILESIZE" -lt 1000 ]; then
+            echo "ERREUR: backup trop petit ($FILESIZE octets)"
+            exit 1
+          fi
+          echo "BACKUP_FILE=$FILENAME" >> $GITHUB_ENV
+          echo "BACKUP_DATE=$DATE" >> $GITHUB_ENV
+
+      - name: Upload vers Hostinger FTP
+        env:
+          FTP_HOST: ${{ secrets.FTP_HOST }}
+          FTP_USER: ${{ secrets.FTP_USER }}
+          FTP_PASS: ${{ secrets.FTP_PASS }}
+        run: |
+          curl -s -T "$BACKUP_FILE" \
+            -u "$FTP_USER:$FTP_PASS" \
+            "ftp://$FTP_HOST/NUTRELIS-BACKUP/$BACKUP_FILE"
+          echo "Upload OK: $BACKUP_FILE"
+
+      - name: Nettoyer anciens backups FTP (garder 10)
+        env:
+          FTP_HOST: ${{ secrets.FTP_HOST }}
+          FTP_USER: ${{ secrets.FTP_USER }}
+          FTP_PASS: ${{ secrets.FTP_PASS }}
+        run: |
+          FILES=$(curl -s -u "$FTP_USER:$FTP_PASS" "ftp://$FTP_HOST/NUTRELIS-BACKUP/" --list-only 2>/dev/null | grep "nutrelis_backup_" | sort -r)
+          COUNT=0
+          for FILE in $FILES; do
+            COUNT=$((COUNT + 1))
+            if [ "$COUNT" -gt 10 ]; then
+              curl -s -u "$FTP_USER:$FTP_PASS" "ftp://$FTP_HOST/" -Q "DELE NUTRELIS-BACKUP/$FILE" > /dev/null 2>&1
+              echo "Supprimé: $FILE"
+            fi
+          done
+          echo "Nettoyage terminé. $COUNT backup(s) sur FTP."

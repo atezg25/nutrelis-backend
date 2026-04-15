@@ -1,4 +1,4 @@
-name: Backup base de données Nutrelis
+name: Backup complet Nutrelis (DB + Frontend + Backend)
 
 on:
   schedule:
@@ -19,6 +19,7 @@ jobs:
           sudo apt-get install -y -qq postgresql-client-18
           /usr/lib/postgresql/18/bin/pg_dump --version
 
+      # ===== 1. BACKUP DATABASE =====
       - name: Sauvegarder la base de données
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
@@ -28,38 +29,122 @@ jobs:
           /usr/lib/postgresql/18/bin/pg_dump "$DATABASE_URL" --no-owner --no-acl | gzip > "$FILENAME"
           SIZE=$(du -h "$FILENAME" | cut -f1)
           FILESIZE=$(stat -c%s "$FILENAME")
-          echo "Backup: $FILENAME ($SIZE)"
+          echo "DB Backup: $FILENAME ($SIZE)"
           if [ "$FILESIZE" -lt 1000 ]; then
-            echo "ERREUR: backup trop petit ($FILESIZE octets)"
+            echo "ERREUR: backup DB trop petit ($FILESIZE octets)"
             exit 1
           fi
-          echo "BACKUP_FILE=$FILENAME" >> $GITHUB_ENV
+          echo "DB_BACKUP_FILE=$FILENAME" >> $GITHUB_ENV
           echo "BACKUP_DATE=$DATE" >> $GITHUB_ENV
 
-      - name: Upload vers Hostinger FTP
-        env:
-          FTP_HOST: ${{ secrets.FTP_HOST }}
-          FTP_USER: ${{ secrets.FTP_USER }}
-          FTP_PASS: ${{ secrets.FTP_PASS }}
+      # ===== 2. BACKUP FRONTEND =====
+      - name: Cloner et archiver le frontend
         run: |
-          curl -s -T "$BACKUP_FILE" \
-            -u "$FTP_USER:$FTP_PASS" \
-            "ftp://$FTP_HOST/NUTRELIS-BACKUP/$BACKUP_FILE"
-          echo "Upload OK: $BACKUP_FILE"
+          git clone --depth 1 https://github.com/atezg25/Nutrelis.git /tmp/nutrelis-frontend
+          FILENAME="nutrelis-frontend_${BACKUP_DATE}.tar.gz"
+          tar czf "$FILENAME" --exclude=node_modules --exclude=.next --exclude=.git -C /tmp/nutrelis-frontend .
+          SIZE=$(du -h "$FILENAME" | cut -f1)
+          echo "Frontend Backup: $FILENAME ($SIZE)"
+          echo "FRONTEND_BACKUP_FILE=$FILENAME" >> $GITHUB_ENV
 
-      - name: Nettoyer anciens backups FTP (garder 10)
+      # ===== 3. BACKUP BACKEND =====
+      - name: Cloner et archiver le backend
+        run: |
+          git clone --depth 1 https://github.com/atezg25/nutrelis-backend.git /tmp/nutrelis-backend
+          FILENAME="nutrelis-backend_${BACKUP_DATE}.tar.gz"
+          tar czf "$FILENAME" --exclude=node_modules --exclude=.git -C /tmp/nutrelis-backend .
+          SIZE=$(du -h "$FILENAME" | cut -f1)
+          echo "Backend Backup: $FILENAME ($SIZE)"
+          echo "BACKEND_BACKUP_FILE=$FILENAME" >> $GITHUB_ENV
+
+      # ===== UPLOADS FTP =====
+      - name: Upload DATABASE vers FTP
         env:
           FTP_HOST: ${{ secrets.FTP_HOST }}
           FTP_USER: ${{ secrets.FTP_USER }}
           FTP_PASS: ${{ secrets.FTP_PASS }}
         run: |
-          FILES=$(curl -s -u "$FTP_USER:$FTP_PASS" "ftp://$FTP_HOST/NUTRELIS-BACKUP/" --list-only 2>/dev/null | grep "nutrelis_backup_" | sort -r)
+          curl -s -T "$DB_BACKUP_FILE" \
+            -u "$FTP_USER:$FTP_PASS" \
+            --ftp-create-dirs \
+            "ftp://$FTP_HOST/home/u737268845/domains/atz.septentrionsports.org/public_html/NUTRELIS%20BACKUP/DATABASE/$DB_BACKUP_FILE"
+          echo "Upload DB OK: $DB_BACKUP_FILE"
+
+      - name: Upload FRONTEND vers FTP
+        env:
+          FTP_HOST: ${{ secrets.FTP_HOST }}
+          FTP_USER: ${{ secrets.FTP_USER }}
+          FTP_PASS: ${{ secrets.FTP_PASS }}
+        run: |
+          curl -s -T "$FRONTEND_BACKUP_FILE" \
+            -u "$FTP_USER:$FTP_PASS" \
+            --ftp-create-dirs \
+            "ftp://$FTP_HOST/home/u737268845/domains/atz.septentrionsports.org/public_html/NUTRELIS%20BACKUP/FRONTEND/$FRONTEND_BACKUP_FILE"
+          echo "Upload Frontend OK: $FRONTEND_BACKUP_FILE"
+
+      - name: Upload BACKEND vers FTP
+        env:
+          FTP_HOST: ${{ secrets.FTP_HOST }}
+          FTP_USER: ${{ secrets.FTP_USER }}
+          FTP_PASS: ${{ secrets.FTP_PASS }}
+        run: |
+          curl -s -T "$BACKEND_BACKUP_FILE" \
+            -u "$FTP_USER:$FTP_PASS" \
+            --ftp-create-dirs \
+            "ftp://$FTP_HOST/home/u737268845/domains/atz.septentrionsports.org/public_html/NUTRELIS%20BACKUP/backend/$BACKEND_BACKUP_FILE"
+          echo "Upload Backend OK: $BACKEND_BACKUP_FILE"
+
+      # ===== NETTOYAGE (garder 20 par dossier) =====
+      - name: Nettoyer anciens backups DATABASE (garder 20)
+        env:
+          FTP_HOST: ${{ secrets.FTP_HOST }}
+          FTP_USER: ${{ secrets.FTP_USER }}
+          FTP_PASS: ${{ secrets.FTP_PASS }}
+        run: |
+          BASE="home/u737268845/domains/atz.septentrionsports.org/public_html/NUTRELIS%20BACKUP/DATABASE"
+          FILES=$(curl -s -u "$FTP_USER:$FTP_PASS" "ftp://$FTP_HOST/$BASE/" --list-only 2>/dev/null | grep "nutrelis_backup_" | sort -r)
           COUNT=0
           for FILE in $FILES; do
             COUNT=$((COUNT + 1))
             if [ "$COUNT" -gt 20 ]; then
-              curl -s -u "$FTP_USER:$FTP_PASS" "ftp://$FTP_HOST/" -Q "DELE NUTRELIS-BACKUP/$FILE" > /dev/null 2>&1
-              echo "Supprimé: $FILE"
+              curl -s -u "$FTP_USER:$FTP_PASS" "ftp://$FTP_HOST/" -Q "DELE $BASE/$FILE" > /dev/null 2>&1
+              echo "Supprimé DB: $FILE"
             fi
           done
-          echo "Nettoyage terminé. $COUNT backup(s) sur FTP."
+          echo "DB: $COUNT backup(s) sur FTP."
+
+      - name: Nettoyer anciens backups FRONTEND (garder 20)
+        env:
+          FTP_HOST: ${{ secrets.FTP_HOST }}
+          FTP_USER: ${{ secrets.FTP_USER }}
+          FTP_PASS: ${{ secrets.FTP_PASS }}
+        run: |
+          BASE="home/u737268845/domains/atz.septentrionsports.org/public_html/NUTRELIS%20BACKUP/FRONTEND"
+          FILES=$(curl -s -u "$FTP_USER:$FTP_PASS" "ftp://$FTP_HOST/$BASE/" --list-only 2>/dev/null | grep "nutrelis-frontend_" | sort -r)
+          COUNT=0
+          for FILE in $FILES; do
+            COUNT=$((COUNT + 1))
+            if [ "$COUNT" -gt 20 ]; then
+              curl -s -u "$FTP_USER:$FTP_PASS" "ftp://$FTP_HOST/" -Q "DELE $BASE/$FILE" > /dev/null 2>&1
+              echo "Supprimé Frontend: $FILE"
+            fi
+          done
+          echo "Frontend: $COUNT backup(s) sur FTP."
+
+      - name: Nettoyer anciens backups BACKEND (garder 20)
+        env:
+          FTP_HOST: ${{ secrets.FTP_HOST }}
+          FTP_USER: ${{ secrets.FTP_USER }}
+          FTP_PASS: ${{ secrets.FTP_PASS }}
+        run: |
+          BASE="home/u737268845/domains/atz.septentrionsports.org/public_html/NUTRELIS%20BACKUP/backend"
+          FILES=$(curl -s -u "$FTP_USER:$FTP_PASS" "ftp://$FTP_HOST/$BASE/" --list-only 2>/dev/null | grep "nutrelis-backend_" | sort -r)
+          COUNT=0
+          for FILE in $FILES; do
+            COUNT=$((COUNT + 1))
+            if [ "$COUNT" -gt 20 ]; then
+              curl -s -u "$FTP_USER:$FTP_PASS" "ftp://$FTP_HOST/" -Q "DELE $BASE/$FILE" > /dev/null 2>&1
+              echo "Supprimé Backend: $FILE"
+            fi
+          done
+          echo "Backend: $COUNT backup(s) sur FTP."

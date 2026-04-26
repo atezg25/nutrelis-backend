@@ -10,6 +10,9 @@ on:
 jobs:
   backup:
     runs-on: ubuntu-latest
+    env:
+      # Hostinger FTP transient slowness : timeouts explicites + retry + passive
+      CURL_FTP_FLAGS: "--ftp-pasv --connect-timeout 30 --max-time 240 --retry 3 --retry-delay 15 --retry-all-errors"
     steps:
       - name: Installer PostgreSQL 18 client
         run: |
@@ -64,7 +67,7 @@ jobs:
           FTP_USER: ${{ secrets.FTP_USER }}
           FTP_PASS: ${{ secrets.FTP_PASS }}
         run: |
-          curl -s -T "$DB_BACKUP_FILE" \
+          curl -sS $CURL_FTP_FLAGS -T "$DB_BACKUP_FILE" \
             -u "$FTP_USER:$FTP_PASS" \
             --ftp-create-dirs \
             "ftp://$FTP_HOST/home/u737268845/domains/atz.septentrionsports.org/public_html/NUTRELIS%20BACKUP/DATABASE/$DB_BACKUP_FILE"
@@ -76,7 +79,7 @@ jobs:
           FTP_USER: ${{ secrets.FTP_USER }}
           FTP_PASS: ${{ secrets.FTP_PASS }}
         run: |
-          curl -s -T "$FRONTEND_BACKUP_FILE" \
+          curl -sS $CURL_FTP_FLAGS -T "$FRONTEND_BACKUP_FILE" \
             -u "$FTP_USER:$FTP_PASS" \
             --ftp-create-dirs \
             "ftp://$FTP_HOST/home/u737268845/domains/atz.septentrionsports.org/public_html/NUTRELIS%20BACKUP/FRONTEND/$FRONTEND_BACKUP_FILE"
@@ -88,62 +91,72 @@ jobs:
           FTP_USER: ${{ secrets.FTP_USER }}
           FTP_PASS: ${{ secrets.FTP_PASS }}
         run: |
-          curl -s -T "$BACKEND_BACKUP_FILE" \
+          curl -sS $CURL_FTP_FLAGS -T "$BACKEND_BACKUP_FILE" \
             -u "$FTP_USER:$FTP_PASS" \
             --ftp-create-dirs \
             "ftp://$FTP_HOST/home/u737268845/domains/atz.septentrionsports.org/public_html/NUTRELIS%20BACKUP/backend/$BACKEND_BACKUP_FILE"
           echo "Upload Backend OK: $BACKEND_BACKUP_FILE"
 
       # ===== NETTOYAGE (garder 20 par dossier) =====
+      # Note: le serveur FTP n'URL-decode PAS les commandes raw -Q "DELE …".
+      # On garde BASE_URL (avec %20) pour l'URL de listing, et BASE_RAW
+      # (espace litteral) pour les commandes DELE. Le `|| true` evite qu'un
+      # 550 isole abort tout le job (set -e).
       - name: Nettoyer anciens backups DATABASE (garder 20)
+        if: always()
         env:
           FTP_HOST: ${{ secrets.FTP_HOST }}
           FTP_USER: ${{ secrets.FTP_USER }}
           FTP_PASS: ${{ secrets.FTP_PASS }}
         run: |
-          BASE="home/u737268845/domains/atz.septentrionsports.org/public_html/NUTRELIS%20BACKUP/DATABASE"
-          FILES=$(curl -s -u "$FTP_USER:$FTP_PASS" "ftp://$FTP_HOST/$BASE/" --list-only 2>/dev/null | grep "nutrelis_backup_" | sort -r)
+          BASE_URL="home/u737268845/domains/atz.septentrionsports.org/public_html/NUTRELIS%20BACKUP/DATABASE"
+          BASE_RAW="home/u737268845/domains/atz.septentrionsports.org/public_html/NUTRELIS BACKUP/DATABASE"
+          FILES=$(curl -sS $CURL_FTP_FLAGS -u "$FTP_USER:$FTP_PASS" "ftp://$FTP_HOST/$BASE_URL/" --list-only 2>/dev/null | grep "nutrelis_backup_" | sort -r || true)
           COUNT=0
           for FILE in $FILES; do
             COUNT=$((COUNT + 1))
             if [ "$COUNT" -gt 20 ]; then
-              curl -s -u "$FTP_USER:$FTP_PASS" "ftp://$FTP_HOST/" -Q "DELE $BASE/$FILE" > /dev/null 2>&1
+              curl -sS $CURL_FTP_FLAGS -u "$FTP_USER:$FTP_PASS" "ftp://$FTP_HOST/" -Q "DELE $BASE_RAW/$FILE" > /dev/null 2>&1 || echo "WARN: DELE failed: $FILE"
               echo "Supprimé DB: $FILE"
             fi
           done
           echo "DB: $COUNT backup(s) sur FTP."
 
       - name: Nettoyer anciens backups FRONTEND (garder 20)
+        if: always()
         env:
           FTP_HOST: ${{ secrets.FTP_HOST }}
           FTP_USER: ${{ secrets.FTP_USER }}
           FTP_PASS: ${{ secrets.FTP_PASS }}
         run: |
-          BASE="home/u737268845/domains/atz.septentrionsports.org/public_html/NUTRELIS%20BACKUP/FRONTEND"
-          FILES=$(curl -s -u "$FTP_USER:$FTP_PASS" "ftp://$FTP_HOST/$BASE/" --list-only 2>/dev/null | grep "nutrelis-frontend_" | sort -r)
+          BASE_URL="home/u737268845/domains/atz.septentrionsports.org/public_html/NUTRELIS%20BACKUP/FRONTEND"
+          BASE_RAW="home/u737268845/domains/atz.septentrionsports.org/public_html/NUTRELIS BACKUP/FRONTEND"
+          FILES=$(curl -sS $CURL_FTP_FLAGS -u "$FTP_USER:$FTP_PASS" "ftp://$FTP_HOST/$BASE_URL/" --list-only 2>/dev/null | grep "nutrelis-frontend_" | sort -r || true)
           COUNT=0
           for FILE in $FILES; do
             COUNT=$((COUNT + 1))
             if [ "$COUNT" -gt 20 ]; then
-              curl -s -u "$FTP_USER:$FTP_PASS" "ftp://$FTP_HOST/" -Q "DELE $BASE/$FILE" > /dev/null 2>&1
+              curl -sS $CURL_FTP_FLAGS -u "$FTP_USER:$FTP_PASS" "ftp://$FTP_HOST/" -Q "DELE $BASE_RAW/$FILE" > /dev/null 2>&1 || echo "WARN: DELE failed: $FILE"
               echo "Supprimé Frontend: $FILE"
             fi
           done
           echo "Frontend: $COUNT backup(s) sur FTP."
 
       - name: Nettoyer anciens backups BACKEND (garder 20)
+        if: always()
         env:
           FTP_HOST: ${{ secrets.FTP_HOST }}
           FTP_USER: ${{ secrets.FTP_USER }}
           FTP_PASS: ${{ secrets.FTP_PASS }}
         run: |
-          BASE="home/u737268845/domains/atz.septentrionsports.org/public_html/NUTRELIS%20BACKUP/backend"
-          FILES=$(curl -s -u "$FTP_USER:$FTP_PASS" "ftp://$FTP_HOST/$BASE/" --list-only 2>/dev/null | grep "nutrelis-backend_" | sort -r)
+          BASE_URL="home/u737268845/domains/atz.septentrionsports.org/public_html/NUTRELIS%20BACKUP/backend"
+          BASE_RAW="home/u737268845/domains/atz.septentrionsports.org/public_html/NUTRELIS BACKUP/backend"
+          FILES=$(curl -sS $CURL_FTP_FLAGS -u "$FTP_USER:$FTP_PASS" "ftp://$FTP_HOST/$BASE_URL/" --list-only 2>/dev/null | grep "nutrelis-backend_" | sort -r || true)
           COUNT=0
           for FILE in $FILES; do
             COUNT=$((COUNT + 1))
             if [ "$COUNT" -gt 20 ]; then
-              curl -s -u "$FTP_USER:$FTP_PASS" "ftp://$FTP_HOST/" -Q "DELE $BASE/$FILE" > /dev/null 2>&1
+              curl -sS $CURL_FTP_FLAGS -u "$FTP_USER:$FTP_PASS" "ftp://$FTP_HOST/" -Q "DELE $BASE_RAW/$FILE" > /dev/null 2>&1 || echo "WARN: DELE failed: $FILE"
               echo "Supprimé Backend: $FILE"
             fi
           done
